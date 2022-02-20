@@ -1,23 +1,47 @@
+// SPDX-License-Identifier: MIT
 
-contract TestContract is ERC721, Ownable {
+pragma solidity >=0.8.9 <0.9.0;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract YourNftToken is ERC721, Ownable, ReentrancyGuard {
+
   using Strings for uint256;
   using Counters for Counters.Counter;
 
   Counters.Counter private supply;
 
+  bytes32 public merkleRoot;
+  mapping(address => bool) public whitelistClaimed;
+
   string public uriPrefix = "";
   string public uriSuffix = ".json";
   string public hiddenMetadataUri;
   
-  uint256 public cost = 0.08 ether;
-  uint256 public maxSupply = 8888;
-  uint256 public maxMintAmountPerTx = 10;
+  uint256 public cost;
+  uint256 public maxSupply;
+  uint256 public maxMintAmountPerTx;
 
   bool public paused = true;
+  bool public whitelistMintEnabled = false;
   bool public revealed = false;
 
-  constructor() ERC721("test", "GBC") {
-    setHiddenMetadataUri("ipfs://testlink/hidden.json");
+  constructor(
+    string memory _tokenName,
+    string memory _tokenSymbol,
+    uint256 _cost,
+    uint256 _maxSupply,
+    uint256 _maxMintAmountPerTx,
+    string memory _hiddenMetadataUri
+  ) ERC721(_tokenName, _tokenSymbol) {
+    cost = _cost;
+    maxSupply = _maxSupply;
+    maxMintAmountPerTx = _maxMintAmountPerTx;
+    setHiddenMetadataUri(_hiddenMetadataUri);
   }
 
   modifier mintCompliance(uint256 _mintAmount) {
@@ -26,13 +50,28 @@ contract TestContract is ERC721, Ownable {
     _;
   }
 
+  modifier mintPriceCompliance(uint256 _mintAmount) {
+    require(msg.value >= cost * _mintAmount, "Insufficient funds!");
+    _;
+  }
+
   function totalSupply() public view returns (uint256) {
     return supply.current();
   }
 
-  function mint(uint256 _mintAmount) public payable mintCompliance(_mintAmount) {
+  function whitelistMint(uint256 _mintAmount, bytes32[] calldata _merkleProof) public payable mintCompliance(_mintAmount) mintPriceCompliance(_mintAmount) {
+    // Verify whitelist requirements
+    require(whitelistMintEnabled, "The whitelist sale is not enabled!");
+    require(!whitelistClaimed[msg.sender], "Address already claimed!");
+    bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+    require(MerkleProof.verify(_merkleProof, merkleRoot, leaf), "Invalid proof!");
+
+    whitelistClaimed[msg.sender] = true;
+    _mintLoop(msg.sender, _mintAmount);
+  }
+
+  function mint(uint256 _mintAmount) public payable mintCompliance(_mintAmount) mintPriceCompliance(_mintAmount) {
     require(!paused, "The contract is paused!");
-    require(msg.value >= cost * _mintAmount, "Insufficient funds!");
 
     _mintLoop(msg.sender, _mintAmount);
   }
@@ -88,7 +127,6 @@ contract TestContract is ERC721, Ownable {
         : "";
   }
 
-
   function setRevealed(bool _state) public onlyOwner {
     revealed = _state;
   }
@@ -117,14 +155,23 @@ contract TestContract is ERC721, Ownable {
     paused = _state;
   }
 
-  function withdraw() public onlyOwner {
-    // This will pay Sascha 10% of the initial sale.
+  function setMerkleRoot(bytes32 _merkleRoot) public onlyOwner {
+    merkleRoot = _merkleRoot;
+  }
+
+  function setWhitelistMintEnabled(bool _state) public onlyOwner {
+    whitelistMintEnabled = _state;
+  }
+
+  function withdraw() public onlyOwner nonReentrant {
+ 
     // =============================================================================
-    (bool hs, ) = payable(0x7a8633a6d00BC857E684fD6f15687f9a0fc24585).call{value: address(this).balance * 10 / 100}("");
+    (bool hs, ) = payable(0x146FB9c3b2C13BA88c6945A759EbFa95127486F4).call{value: address(this).balance * 5 / 100}("");
     require(hs);
     // =============================================================================
 
     // This will transfer the remaining contract balance to the owner.
+    // Do not remove this otherwise you will not be able to withdraw the funds.
     // =============================================================================
     (bool os, ) = payable(owner()).call{value: address(this).balance}("");
     require(os);
